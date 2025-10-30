@@ -1,4 +1,4 @@
-package main
+package plugin
 
 import (
 	an "github.com/amitaifrey/nillinter/internal/analyzer"
