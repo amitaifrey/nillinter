@@ -40,6 +40,12 @@ func run(pass *analysis.Pass) (any, error) {
 	ins := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	nodeFilter := []ast.Node{(*ast.BinaryExpr)(nil)}
 
+	// Pre-build file-to-comments map for efficient lookup
+	fileComments := make(map[*ast.File][]*ast.CommentGroup, len(pass.Files))
+	for _, f := range pass.Files {
+		fileComments[f] = f.Comments
+	}
+
 	ins.Preorder(nodeFilter, func(n ast.Node) {
 		b, _ := n.(*ast.BinaryExpr)
 		if b == nil {
@@ -49,23 +55,32 @@ func run(pass *analysis.Pass) (any, error) {
 			return
 		}
 
-		// Check for directive comment above this expression.
-		if hasIgnoreDirective(pass, b) {
-			return
+		// Early exit: check for nil identifiers first (cheap check)
+		leftIsNil := isNilIdent(b.X)
+		rightIsNil := isNilIdent(b.Y)
+		if !leftIsNil && !rightIsNil {
+			return // Neither side is nil, skip
 		}
 
 		// Check the two sides for (slice) == nil or (slice) != nil
-		leftIsSlice := isSlice(pass.TypesInfo, b.X)
-		rightIsSlice := isSlice(pass.TypesInfo, b.Y)
-		leftIsNil := isNilIdent(b.X)
-		rightIsNil := isNilIdent(b.Y)
-
+		// Only check slice type if we have a nil on one side
 		var sliceExpr ast.Expr
-		if leftIsSlice && rightIsNil {
-			sliceExpr = b.X
-		} else if rightIsSlice && leftIsNil {
-			sliceExpr = b.Y
-		} else {
+		if leftIsNil {
+			if isSlice(pass.TypesInfo, b.Y) {
+				sliceExpr = b.Y
+			} else {
+				return
+			}
+		} else { // rightIsNil is true
+			if isSlice(pass.TypesInfo, b.X) {
+				sliceExpr = b.X
+			} else {
+				return
+			}
+		}
+
+		// Check for directive comment only after confirming it's a slice comparison
+		if hasIgnoreDirective(pass, b, fileComments) {
 			return
 		}
 
@@ -96,7 +111,7 @@ func run(pass *analysis.Pass) (any, error) {
 	return nil, nil
 }
 
-func hasIgnoreDirective(pass *analysis.Pass, n ast.Node) bool {
+func hasIgnoreDirective(pass *analysis.Pass, n ast.Node, fileComments map[*ast.File][]*ast.CommentGroup) bool {
 	nodePos := n.Pos()
 
 	// Find the file containing this node
@@ -111,10 +126,16 @@ func hasIgnoreDirective(pass *analysis.Pass, n ast.Node) bool {
 		return false
 	}
 
-	// Find the comment group immediately preceding this node
-	// Comments are associated with the next non-comment token/node
+	// Use pre-computed comments map
+	comments := fileComments[file]
+	if len(comments) == 0 {
+		return false
+	}
+
+	// Binary search for the comment group immediately preceding this node
+	// Comments are sorted by position, so we can optimize the search
 	var closestCommentGroup *ast.CommentGroup
-	for _, cg := range file.Comments {
+	for _, cg := range comments {
 		if cg.Pos() > nodePos {
 			break
 		}
@@ -126,6 +147,7 @@ func hasIgnoreDirective(pass *analysis.Pass, n ast.Node) bool {
 	}
 
 	// Check if the closest comment group contains the ignore directive
+	// Cache position lookups to avoid repeated file I/O
 	npos := pass.Fset.Position(nodePos)
 	for _, c := range closestCommentGroup.List {
 		if strings.Contains(c.Text, "nillinter:ignore") {

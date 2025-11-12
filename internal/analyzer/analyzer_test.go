@@ -243,6 +243,12 @@ func f() {
 				Files: []*ast.File{f},
 			}
 
+			// Build file-to-comments map (matching the optimized implementation)
+			fileComments := make(map[*ast.File][]*ast.CommentGroup, len(pass.Files))
+			for _, file := range pass.Files {
+				fileComments[file] = file.Comments
+			}
+
 			// Find the binary expression
 			var binExpr *ast.BinaryExpr
 			ast.Inspect(f, func(n ast.Node) bool {
@@ -257,7 +263,7 @@ func f() {
 				t.Fatal("Could not find binary expression")
 			}
 
-			result := hasIgnoreDirective(pass, binExpr)
+			result := hasIgnoreDirective(pass, binExpr, fileComments)
 			if result != tt.expected {
 				t.Errorf("hasIgnoreDirective() = %v, want %v", result, tt.expected)
 			}
