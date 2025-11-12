@@ -84,7 +84,7 @@ func run(pass *analysis.Pass) (any, error) {
 			Message: msg,
 			SuggestedFixes: []analysis.SuggestedFix{
 				{
-					Message: "Replace with len(...) check",
+					Message: "Replace nil comparison with len(...) == 0/!= 0 check",
 					TextEdits: []analysis.TextEdit{
 						{Pos: b.Pos(), End: b.End(), NewText: []byte(replacement)},
 					},
@@ -97,22 +97,46 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 func hasIgnoreDirective(pass *analysis.Pass, n ast.Node) bool {
-	pos := pass.Fset.Position(n.Pos())
+	nodePos := n.Pos()
+
+	// Find the file containing this node
+	var file *ast.File
 	for _, f := range pass.Files {
-		for _, cg := range f.Comments {
-			if cg.Pos() > n.Pos() {
-				break
-			}
-			for _, c := range cg.List {
-				if strings.Contains(c.Text, "nillinter:ignore") {
-					cpos := pass.Fset.Position(c.Slash)
-					if cpos.Filename == pos.Filename && cpos.Line >= pos.Line-1 && cpos.Line <= pos.Line+1 {
-						return true
-					}
-				}
+		if f.Pos() <= nodePos && nodePos < f.End() {
+			file = f
+			break
+		}
+	}
+	if file == nil {
+		return false
+	}
+
+	// Find the comment group immediately preceding this node
+	// Comments are associated with the next non-comment token/node
+	var closestCommentGroup *ast.CommentGroup
+	for _, cg := range file.Comments {
+		if cg.Pos() > nodePos {
+			break
+		}
+		closestCommentGroup = cg
+	}
+
+	if closestCommentGroup == nil {
+		return false
+	}
+
+	// Check if the closest comment group contains the ignore directive
+	npos := pass.Fset.Position(nodePos)
+	for _, c := range closestCommentGroup.List {
+		if strings.Contains(c.Text, "nillinter:ignore") {
+			cpos := pass.Fset.Position(c.Slash)
+			// Comments on the same line or the line immediately before
+			if cpos.Filename == npos.Filename && (cpos.Line == npos.Line || cpos.Line == npos.Line-1) {
+				return true
 			}
 		}
 	}
+
 	return false
 }
 
